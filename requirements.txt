@@ -1,0 +1,13 @@
+# Python dependencies for detection and utilities
+# Note: Picamera2 is installed via apt on Raspberry Pi OS, not pip.
+# OpenCV is required for OpenCV-based detectors and annotations. Use the headless build to avoid GUI deps.
+numpy>=1.24
+opencv-python-headless>=4.8
+
+# Raspberry Pi note:
+# On Pi (aarch64/arm), if the pip wheel is not available or too heavy, prefer:
+#   sudo apt install -y python3-opencv
+# In that case, create your venv with --system-site-packages so it can see apt packages.
+
+# Optional (only if you want the Ultralytics backend):
+# ultralytics>=8.2.0

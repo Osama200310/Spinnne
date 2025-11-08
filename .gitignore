@@ -1,0 +1,63 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments and Python tooling
+.venv/
+venv/
+env/
+.python-version
+pip-wheel-metadata/
+*.egg-info/
+.eggs/
+.tox/
+.nox/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Build/packaging artifacts
+build/
+dist/
+*.spec
+
+# Editor/IDE settings
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS / Finder junk
+.DS_Store
+Thumbs.db
+
+# Logs and runtime
+*.log
+
+# Project runtime outputs (captured images and detections)
+timelapse/
+
+# Model files and large artifacts
+models/
+*.pt
+*.onnx
+*.weights
+*.caffemodel
+
+# Allow the example YOLO model already present in the repo to remain tracked
+# (Git will continue tracking files that are already committed even if ignored.)
+#!yolov8n.pt
+
+# Jupyter and notebooks (none in repo, but safe to ignore if added later)
+.ipynb_checkpoints/
+*.ipynb
+
+# Environment/config files (local only)
+.env
+.env.*
+.envrc
