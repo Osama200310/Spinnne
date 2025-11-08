@@ -73,7 +73,7 @@ def apply_exposure_controls(camera: CamExt, args) -> None:
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Raspberry Pi timelapse with optional manual exposure and multiple detection backends (OpenCV or Ultralytics).")
+    p = argparse.ArgumentParser(description="Raspberry Pi timelapse with optional manual exposure and Ultralytics detection.")
     p.add_argument("--save-dir", type=Path, default=SAVE_DIR, help="Folder to save images")
     p.add_argument("--interval", type=int, default=INTERVAL_SEC, help="Seconds between shots")
 
@@ -87,31 +87,13 @@ def parse_args():
     p.add_argument("--awb", action="store_true", default=AWB_ENABLE, help="Enable auto white balance (default: on)")
     p.add_argument("--no-awb", dest="awb", action="store_false", help="Disable auto white balance")
 
-    # Detection-related
+    # Detection-related (Ultralytics only)
     p.add_argument("--detect", action="store_true", default=DETECT_ENABLE, help="Enable object detection for each image (default: on)")
     p.add_argument("--no-detect", dest="detect", action="store_false", help="Disable object detection")
-    p.add_argument("--detector", type=str, default="opencv-motion", choices=["opencv-motion", "opencv-dnn-ssd", "opencv-ball", "ultralytics"], help="Detection backend to use")
-    # For ultralytics
     p.add_argument("--model", type=str, default=YOLO_MODEL, help="Ultralytics model path or name (default: yolov8n.pt)")
     p.add_argument("--conf", type=float, default=YOLO_CONF, help="Detection confidence threshold (ultralytics) (default: 0.25)")
     p.add_argument("--imgsz", type=int, default=640, help="Ultralytics inference image size (short side). Lower is faster but less accurate (e.g., 416)")
     p.add_argument("--yolo-classes", nargs="+", help="Restrict Ultralytics to these classes (names or IDs). Example: --yolo-classes 'sports ball' 32")
-    # For OpenCV motion
-    p.add_argument("--min-area", type=int, default=500, help="Minimum bounding box area (pixels) for motion detections (opencv-motion)")
-    # For OpenCV SSD
-    p.add_argument("--ssd-prototxt", type=Path, help="Path to MobileNet-SSD deploy.prototxt (opencv-dnn-ssd)")
-    p.add_argument("--ssd-weights", type=Path, help="Path to MobileNet-SSD caffemodel (opencv-dnn-ssd)")
-    p.add_argument("--ssd-conf", type=float, default=0.4, help="Confidence threshold for SSD (opencv-dnn-ssd)")
-    # For OpenCV ball (HoughCircles)
-    p.add_argument("--ball-dp", type=float, default=1.2, help="Inverse ratio of accumulator resolution to image resolution (HoughCircles)")
-    p.add_argument("--ball-min-dist", type=int, default=20, help="Minimum distance between detected circle centers")
-    p.add_argument("--ball-canny", type=int, default=100, help="Higher Canny edge threshold passed to HoughCircles (param1)")
-    p.add_argument("--ball-accum", type=int, default=30, help="Accumulator threshold for circle centers in HoughCircles (param2). Lower → more detections")
-    p.add_argument("--ball-min-radius", type=int, default=5, help="Minimum circle radius in pixels (set 0 to auto)")
-    p.add_argument("--ball-max-radius", type=int, default=80, help="Maximum circle radius in pixels (set 0 to auto)")
-    p.add_argument("--ball-resize", type=float, default=1.0, help="Optional downscale factor for processing (e.g., 0.75 or 0.5); mapped back to original coords")
-    p.add_argument("--ball-hsv-lower", nargs=3, type=int, help="Optional HSV lower bound (H S V) for color mask, e.g., 20 50 50")
-    p.add_argument("--ball-hsv-upper", nargs=3, type=int, help="Optional HSV upper bound (H S V) for color mask, e.g., 35 255 255")
 
     p.add_argument("--save-annotated", action="store_true", default=SAVE_ANNOTATED, help="Also save annotated image with boxes (adds _det.jpg)")
 
@@ -136,22 +118,8 @@ def main():
         conf=args.conf,
         save_annotated=args.save_annotated,
         imgsz=args.imgsz,
-        detector=args.detector,
-        min_area=args.min_area,
-        ssd_prototxt=args.ssd_prototxt,
-        ssd_weights=args.ssd_weights,
-        ssd_conf=args.ssd_conf,
         yolo_classes=args.yolo_classes,
         save_on=args.save_on,
-        ball_dp=args.ball_dp,
-        ball_min_dist=args.ball_min_dist,
-        ball_canny=args.ball_canny,
-        ball_accum=args.ball_accum,
-        ball_min_radius=args.ball_min_radius,
-        ball_max_radius=args.ball_max_radius,
-        ball_resize=args.ball_resize,
-        ball_hsv_lower=tuple(args.ball_hsv_lower) if args.ball_hsv_lower else None,
-        ball_hsv_upper=tuple(args.ball_hsv_upper) if args.ball_hsv_upper else None,
     )
     if args.detect and not detector.enabled:
         LOGGER.info("Continuing without detection. Install dependencies per README to enable it.")
@@ -174,22 +142,7 @@ def main():
                 f", ISO≈{args.iso}" if args.iso is not None else "",
             )
         if detector.enabled:
-            if args.detector == 'ultralytics':
-                LOGGER.info("Detection: ON → backend=ultralytics, model=%s, conf=%s, imgsz=%s", args.model, args.conf, args.imgsz)
-            elif args.detector == 'opencv-motion':
-                LOGGER.info("Detection: ON → backend=opencv-motion, min_area=%s", args.min_area)
-            elif args.detector == 'opencv-dnn-ssd':
-                LOGGER.info("Detection: ON → backend=opencv-dnn-ssd, conf=%s", args.ssd_conf)
-            elif args.detector == 'opencv-ball':
-                hsv = None
-                if args.ball_hsv_lower and args.ball_hsv_upper:
-                    hsv = f"HSV={tuple(args.ball_hsv_lower)}..{tuple(args.ball_hsv_upper)}"
-                LOGGER.info(
-                    "Detection: ON → backend=opencv-ball, dp=%s, min_dist=%s, canny=%s, accum=%s, minR=%s, maxR=%s, resize=%s%s",
-                    args.ball_dp, args.ball_min_dist, args.ball_canny, args.ball_accum,
-                    args.ball_min_radius, args.ball_max_radius, args.ball_resize,
-                    f", {hsv}" if hsv else "",
-                )
+            LOGGER.info("Detection: ON → Ultralytics, model=%s, conf=%s, imgsz=%s", args.model, args.conf, args.imgsz)
             if args.save_annotated:
                 LOGGER.info("Annotated images will be saved with suffix _det.jpg")
             if args.save_on:
@@ -204,7 +157,7 @@ def main():
             base = save_dir / f"image_{ts}"
 
             # Fast path: Ultralytics + save-on → do in-memory detection first; only save on match
-            if detector.enabled and args.detector == 'ultralytics' and args.save_on:
+            if detector.enabled and args.save_on:
                 try:
                     frame = camera.capture_array()
                 except Exception as e:

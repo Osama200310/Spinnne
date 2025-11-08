@@ -22,45 +22,34 @@ python3 main.py
 - Stop with `Ctrl+C`
 
 ---
-## Object detection and conditional saving (new)
+## Object detection and conditional saving (Ultralytics only)
 
-Detection backends (choose one with `--detector`):
-- `opencv-motion` (default): simple background motion detection
-- `opencv-dnn-ssd`: MobileNet-SSD (requires `--ssd-prototxt` and `--ssd-weights`)
-- `opencv-ball`: circle/ball detection using HoughCircles (tunable)
-- `ultralytics`: YOLOv8/YOLOv5 via `ultralytics` package
+This project now uses a single detection backend: Ultralytics YOLO (e.g., YOLOv8). OpenCV-based detectors have been removed for simplicity.
 
 Common flags:
 - `--detect` / `--no-detect` to turn detection on/off (default: on)
+- `--model` to choose the Ultralytics model (default: `yolov8n.pt`)
+- `--conf` and `--imgsz` to tune inference
+- `--yolo-classes <names/ids...>` to restrict which classes are considered/written
 - `--save-annotated` to also write an annotated image with boxes (`_det.jpg`)
 - `--save-on <labels...>` keep the image only if at least one of these labels is detected (case-insensitive). You can pass multiple labels (space separated).
 
 Behavior with `--save-on`:
-- Ultralytics backend: the app now runs detection on the raw camera frame in memory first and only saves the JPEG if a required label is detected. This avoids writing and then deleting images, saving I/O and SD-card wear.
-- Other backends (opencv-motion / opencv-dnn-ssd / opencv-ball): detection currently runs on the saved file. If nothing matches, the file may be deleted afterward (same as before).
+- The app runs YOLO on the raw camera frame in memory first and only saves the JPEG if a required label is detected. This avoids writing and then deleting images, saving I/O and SD-card wear.
 
 Examples:
 ```bash
 # Keep only images that contain an orange (YOLO model with that class)
-python3 main.py --detector ultralytics --model yolov8n.pt --save-on orange
+python3 main.py --model yolov8n.pt --save-on orange
 
-# Keep only when motion is detected (any motion bounding box)
-python3 main.py --detector opencv-motion --save-on motion
+# Keep only oranges OR apples (multiple labels)
+python3 main.py --model yolov8n.pt --save-on orange apple
 
-# SSD backend, keep only person or dog (multiple labels)
-python3 main.py --detector opencv-dnn-ssd \
-  --ssd-prototxt deploy.prototxt \
-  --ssd-weights mobilenet.caffemodel \
-  --save-on person dog
-
-# Ultralytics, keep only oranges OR apples (multiple labels)
-python3 main.py --detector ultralytics --model yolov8n.pt --save-on orange apple
-
-# Ball detection, keep only when a ball-like circle is found
-python3 main.py --detector opencv-ball --save-on ball --save-annotated
+# Restrict YOLO classes and keep only when a sports ball is found
+python3 main.py --model yolov8n.pt --yolo-classes "sports ball" 32 --save-on "sports ball"
 ```
 Notes:
-- Matching is case-insensitive; YOLO class names accept spaces/underscores interchangeably. With YOLO you may also pass numeric class IDs in `--save-on`.
+- Matching is case-insensitive; YOLO class names accept spaces/underscores interchangeably. You may also pass numeric class IDs in `--save-on`.
 - `--yolo-classes` still works to restrict which YOLO classes are considered/written.
 - When detection is disabled or fails to initialize, `--save-on` has no effect and all images will be kept (a warning is logged).
 
@@ -107,15 +96,6 @@ Ultralytics-specific:
 - `--conf 0.25` and `--imgsz 640`
 - Optionally restrict classes with `--yolo-classes` (names or IDs). Example: `--yolo-classes "sports ball" 32`
 
-OpenCV motion:
-- `--min-area 500` minimum area for motion boxes
-
-OpenCV DNN SSD:
-- Provide `--ssd-prototxt` and `--ssd-weights`; tune `--ssd-conf`
-
-OpenCV ball (HoughCircles):
-- `--ball-dp`, `--ball-min-dist`, `--ball-canny`, `--ball-accum`, `--ball-min-radius`, `--ball-max-radius`, `--ball-resize`
-- Optional color mask: `--ball-hsv-lower H S V` and `--ball-hsv-upper H S V`
 
 ---
 ## Freeze motion / reduce blur
@@ -325,16 +305,10 @@ Useful flags:
 
 ---
 
-## Detection backends: OpenCV or Ultralytics
+## Legacy: Detection backends (deprecated; project now uses Ultralytics only)
 
-You can choose between lightweight OpenCV-based detection and the original Ultralytics YOLOv8. OpenCV options avoid PyTorch and are friendlier on Raspberry Pi.
+The project previously supported several OpenCV-based detectors (`opencv-motion`, `opencv-dnn-ssd`, `opencv-ball`). These have been removed. If you need similar functionality, consider implementing it as a separate module or fork based on earlier commits. Installation now focuses on Picamera2 for capture and Ultralytics for detection:
 
-- `opencv-motion` (default): motion/foreground detection using background subtraction. Very fast; logs moving regions as `motion` without class labels.
-- `opencv-dnn-ssd`: MobileNet-SSD (Caffe) via OpenCV DNN to get lightweight class labels (person, car, dog, …) without PyTorch. Requires model files.
-- `opencv-ball`: specialized circle detector using HoughCircles (optional HSV color filter). Great for small spherical balls; no heavy model required.
-- `ultralytics`: original YOLOv8 Nano integration (heavier; requires `ultralytics` + PyTorch).
-
-### Install
 - Base requirements (in venv recommended):
   ```bash
   python3 -m venv .venv --system-site-packages   # so Picamera2 from apt is visible
@@ -346,81 +320,9 @@ You can choose between lightweight OpenCV-based detection and the original Ultra
   ```bash
   sudo apt update
   sudo apt install -y python3-picamera2    # camera library (mandatory)
-  # Optional if pip wheel isn’t available or you prefer system OpenCV
+  # Optional if pip wheel isn’t available or you prefer system OpenCV for webcam/annotation
   sudo apt install -y python3-opencv
   ```
-- Optional Ultralytics backend:
-  ```bash
-  pip install ultralytics
-  ```
-
-### Using the backends
-- OpenCV motion (default):
-  ```bash
-  python3 main.py --detector opencv-motion --min-area 800 --save-annotated
-  ```
-  - Writes lines like `motion 0.000 x1 y1 x2 y2` to the sidecar `.txt` next to each image.
-  - `--min-area` filters tiny blobs (pixels). Increase to reduce noise.
-
-- OpenCV DNN SSD (with labels, lighter than YOLOv8):
-  1) Download model files (once):
-     ```bash
-     mkdir -p models
-     # Example URLs (common mirrors); verify checksums/sources in your environment
-     wget -O models/MobileNetSSD_deploy.prototxt \
-       https://raw.githubusercontent.com/chuanqi305/MobileNet-SSD/master/MobileNetSSD_deploy.prototxt
-     wget -O models/MobileNetSSD_deploy.caffemodel \
-       https://github.com/chuanqi305/MobileNet-SSD/raw/master/MobileNetSSD_deploy.caffemodel
-     ```
-  2) Run:
-     ```bash
-     python3 main.py \
-       --detector opencv-dnn-ssd \
-       --ssd-prototxt models/MobileNetSSD_deploy.prototxt \
-       --ssd-weights models/MobileNetSSD_deploy.caffemodel \
-       --ssd-conf 0.4 \
-       --save-annotated
-     ```
-
-- OpenCV ball (HoughCircles; specialized for small round balls):
-  ```bash
-  # Basic circle detection at full resolution
-  python3 main.py --detector opencv-ball --save-annotated
-
-  # Faster (downscale processing to 0.75x) and tuned for small balls of radius ~8–25 px
-  python3 main.py \
-    --detector opencv-ball \
-    --ball-resize 0.75 \
-    --ball-min-radius 8 \
-    --ball-max-radius 25 \
-    --ball-accum 25 \
-    --ball-canny 120 \
-    --save-annotated
-
-  # If your ball has a distinct color (HSV in OpenCV’s 0..179 hue range), e.g., orange:
-  # Lower= (10, 80, 80), Upper= (25, 255, 255)
-  python3 main.py \
-    --detector opencv-ball \
-    --ball-hsv-lower 10 80 80 \
-    --ball-hsv-upper 25 255 255 \
-    --save-annotated
-  ```
-  Notes:
-  - Output lines are labeled `ball 1.000 x1 y1 x2 y2`. Confidence is a fixed 1.0 since HoughCircles doesn’t provide a probability.
-  - Key parameters:
-    - `--ball-min-radius` / `--ball-max-radius` in pixels (set either/both to 0 to let OpenCV auto‑choose).
-    - `--ball-accum` (param2): lower → more circles (more false positives), higher → fewer circles.
-    - `--ball-canny` (param1): higher requires stronger edges; reduce if your ball edges are soft.
-    - `--ball-min-dist`: minimum distance between circle centers (helps avoid duplicates).
-    - `--ball-resize`: downscale for speed; coordinates are mapped back to the original image.
-  - Tip: Use fast shutter to reduce motion blur when tracking small fast balls.
-
-- Ultralytics YOLOv8 (original):
-  ```bash
-  python3 main.py --detector ultralytics --model yolov8n.pt --conf 0.25 --imgsz 416
-  ```
-
-All backends write detections to a `.txt` with the same basename as the image. If no detections, it writes `no_detections`. Use `--save-annotated` to create an extra `*_det.jpg`.
 
 ### Virtualenv and Picamera2 on Raspberry Pi
 Picamera2 is installed via apt into system site‑packages. Create your venv with `--system-site-packages` so the venv can import it:
