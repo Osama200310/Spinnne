@@ -6,6 +6,8 @@ import signal
 import argparse
 from typing import Optional, List, Tuple, Iterable
 import logging
+import subprocess
+import shlex
 
 from camera import Camera as CamExt  # local module
 from detector import Detector as DetectorExt  # local module
@@ -13,6 +15,69 @@ from detector import Detector as DetectorExt  # local module
 # Configure basic logging (keeps print statements intact for CLI simplicity)
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 LOGGER = logging.getLogger("timelapse")
+
+
+def _extract_labels_from_lines(lines: list[str]) -> list[str]:
+    labels: list[str] = []
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("no_detections"):
+            continue
+        parts = line.split()
+        if parts:
+            labels.append(parts[0])
+    # de-duplicate while preserving order
+    seen = set()
+    uniq = []
+    for l in labels:
+        if l not in seen:
+            uniq.append(l)
+            seen.add(l)
+    return uniq
+
+
+def _run_on_match(cmd_template: str, *, image: Path, txt: Optional[Path], annotated: Optional[Path], labels: list[str], timestamp: str, save_dir: Path, sync: bool = False, timeout: Optional[int] = None, shell: bool = False) -> None:
+    """Run an external command when a match occurs.
+
+    Placeholders in cmd_template:
+      {image} {txt} {annotated} {labels} {timestamp} {save_dir}
+    PatInit commiths are substituted as absolute paths. {labels} is a comma-separated list.
+    """
+    try:
+        ctx = {
+            "image": str(image.resolve()),
+            "txt": str(txt.resolve()) if txt else "",
+            "annotated": str(annotated.resolve()) if annotated else "",
+            "labels": ",".join(labels),
+            "timestamp": timestamp,
+            "save_dir": str(save_dir.resolve()),
+        }
+        formatted = cmd_template.format(**ctx)
+        if shell:
+            cmd = formatted if isinstance(formatted, str) else str(formatted)
+        else:
+            cmd = shlex.split(formatted)
+        if sync:
+            LOGGER.info("Running on-match command (sync): %s", formatted)
+            try:
+                res = subprocess.run(cmd, timeout=timeout, shell=shell, capture_output=True, text=True)
+                LOGGER.info("on-match exit code: %s", res.returncode)
+                if res.stdout:
+                    LOGGER.debug("on-match stdout: %s", res.stdout.strip())
+                if res.stderr:
+                    LOGGER.debug("on-match stderr: %s", res.stderr.strip())
+            except subprocess.TimeoutExpired:
+                LOGGER.warning("on-match command timed out after %ss", timeout)
+            except Exception as e:
+                LOGGER.warning("on-match command failed: %s", e)
+        else:
+            LOGGER.info("Starting on-match command (async): %s", formatted)
+            try:
+                subprocess.Popen(cmd, shell=shell)
+            except Exception as e:
+                LOGGER.warning("Failed to start on-match command: %s", e)
+    except Exception as e:
+        LOGGER.warning("Failed to prepare on-match command: %s", e)
 
 
 # Lazy imports for detection (ultralytics / cv2) are inside Detector
@@ -100,11 +165,21 @@ def parse_args():
     # Conditional saving: keep captures only if at least one of these labels is detected
     p.add_argument("--save-on", nargs="+", help="Only keep the image if one of these labels is detected (case-insensitive). Examples: --save-on orange person 'sports ball'")
 
+    # Callback on match: run external command or script
+    p.add_argument("--on-match-cmd", type=str, help="Command to run when a required label is detected and the image is saved. Supports placeholders: {image} {txt} {annotated} {labels} {timestamp} {save_dir}")
+    p.add_argument("--on-match-sync", action="store_true", help="Run the on-match command synchronously and wait for it to finish (default: run asynchronously)")
+    p.add_argument("--on-match-timeout", type=int, default=None, help="Timeout in seconds for synchronous on-match command")
+    p.add_argument("--on-match-shell", action="store_true", help="Run the on-match command via shell=True (use carefully)")
+
     return p.parse_args()
 
 
 def main():
     args = parse_args()
+
+    # Basic validation for callback args
+    if getattr(args, "on_match_timeout", None) and not getattr(args, "on_match_sync", False):
+        LOGGER.warning("--on-match-timeout has no effect without --on-match-sync")
 
     save_dir = args.save_dir
     interval = args.interval
@@ -190,12 +265,40 @@ def main():
                             LOGGER.info("Discarded capture (no required label detected)")
                         except Exception as e:
                             LOGGER.warning("Failed to remove unneeded files for %s: %s", filename.name, e)
+                    else:
+                        # On-match callback (fallback path) when kept
+                        if args.on_match_cmd:
+                            # Try to get labels from .txt we just wrote
+                            labels = []
+                            try:
+                                with (txt_path if txt_path else filename.with_suffix('.txt')).open('r') as f:
+                                    for line in f:
+                                        line = line.strip()
+                                        if not line or line.startswith('no_detections'):
+                                            continue
+                                        parts = line.split()
+                                        if parts:
+                                            labels.append(parts[0])
+                            except Exception:
+                                pass
+                            det_img_path = filename.with_name(filename.stem + "_det.jpg")
+                            annotated_path = det_img_path if det_img_path.exists() else None
+                            _run_on_match(
+                                args.on_match_cmd,
+                                image=filename,
+                                txt=txt_path,
+                                annotated=annotated_path,
+                                labels=list(dict.fromkeys(labels)),
+                                timestamp=ts,
+                                save_dir=save_dir,
+                                sync=getattr(args, 'on_match_sync', False),
+                                timeout=getattr(args, 'on_match_timeout', None),
+                                shell=getattr(args, 'on_match_shell', False),
+                            )
                 else:
-                    matched, det_lines, annotated = result
+                    matched, det_lines, annotated, objects = result
+                    LOGGER.info(f"Found: {objects}")
                     if matched:
-
-                        # We can do anything here
-
                         # Save image now
                         try:
                             import cv2  # type: ignore
@@ -209,12 +312,29 @@ def main():
                                     f.write(line + "\n")
                             LOGGER.info("Detections written to %s", txt_path.name)
                             # Optional annotated image
+                            annotated_path = None
                             if annotated is not None:
                                 det_img = filename.with_name(filename.stem + "_det.jpg")
                                 try:
                                     cv2.imwrite(str(det_img), annotated)
+                                    annotated_path = det_img
                                 except Exception as e:
                                     LOGGER.warning(f"Failed to save annotated image: {e}")
+                            # On-match callback (in-memory path)
+                            if args.on_match_cmd:
+                                labels = _extract_labels_from_lines(det_lines)
+                                _run_on_match(
+                                    args.on_match_cmd,
+                                    image=filename,
+                                    txt=txt_path,
+                                    annotated=annotated_path,
+                                    labels=labels,
+                                    timestamp=ts,
+                                    save_dir=save_dir,
+                                    sync=getattr(args, 'on_match_sync', False),
+                                    timeout=getattr(args, 'on_match_timeout', None),
+                                    shell=getattr(args, 'on_match_shell', False),
+                                )
                         except Exception as e:
                             LOGGER.warning(f"Failed to save matched capture: {e}")
                     else:
@@ -244,6 +364,35 @@ def main():
                         LOGGER.info("Discarded capture (no required label detected)")
                     except Exception as e:
                         LOGGER.warning("Failed to remove unneeded files for %s: %s", filename.name, e)
+                else:
+                    # On-match callback (default/file-based path) when kept and detection enabled
+                    if detector.enabled and args.on_match_cmd and (not args.save_on or matched):
+                        labels = []
+                        try:
+                            with (txt_path if txt_path else filename.with_suffix('.txt')).open('r') as f:
+                                for line in f:
+                                    line = line.strip()
+                                    if not line or line.startswith('no_detections'):
+                                        continue
+                                    parts = line.split()
+                                    if parts:
+                                        labels.append(parts[0])
+                        except Exception:
+                            pass
+                        det_img_path = filename.with_name(filename.stem + "_det.jpg")
+                        annotated_path = det_img_path if det_img_path.exists() else None
+                        _run_on_match(
+                            args.on_match_cmd,
+                            image=filename,
+                            txt=txt_path,
+                            annotated=annotated_path,
+                            labels=list(dict.fromkeys(labels)),
+                            timestamp=ts,
+                            save_dir=save_dir,
+                            sync=getattr(args, 'on_match_sync', False),
+                            timeout=getattr(args, 'on_match_timeout', None),
+                            shell=getattr(args, 'on_match_shell', False),
+                        )
 
             # Sleep after capture so the first image is immediate
             for _ in range(interval):

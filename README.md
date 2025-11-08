@@ -53,6 +53,44 @@ Notes:
 - `--yolo-classes` still works to restrict which YOLO classes are considered/written.
 - When detection is disabled or fails to initialize, `--save-on` has no effect and all images will be kept (a warning is logged).
 
+### Run a command when a match occurs (callback)
+You can trigger an external command or script whenever an image is kept due to a match. This is useful to kick off custom workflows (move/copy the file, upload to cloud/webhook, notify, etc.).
+
+Flags:
+- `--on-match-cmd "<command with placeholders>"` the command to run after saving a matched image
+- `--on-match-sync` wait for the command to finish (by default it runs asynchronously)
+- `--on-match-timeout <sec>` maximum time to wait for a synchronous command
+- `--on-match-shell` run via the system shell (`shell=True`). Use only if you need shell features.
+
+Placeholders available inside the command string (they will be formatted):
+- `{image}` absolute path to the saved image
+- `{txt}` absolute path to the sidecar detections file (or empty if not present)
+- `{annotated}` absolute path to the annotated image if saved (or empty)
+- `{labels}` comma-separated list of detected labels in the image
+- `{timestamp}` timestamp used in the file name (same as in `image_YYYY-mm-dd_HH-MM-SS.jpg`)
+- `{save_dir}` absolute path to the save directory
+
+Behavior:
+- If `--save-on` is provided, the command runs only when a required label was detected (i.e., when the image is kept).
+- If `--save-on` is not provided but detection is enabled, the command runs after each detection (for every saved image).
+- If detection is disabled, no callback is run.
+
+Examples:
+```bash
+# Log matched images to the console (sync)
+python3 main.py --save-on orange apple \
+  --on-match-cmd "echo kept {image} labels={labels}" --on-match-sync
+
+# Upload kept images using a custom script (async)
+python3 main.py --save-on person dog \
+  --on-match-cmd "/usr/local/bin/upload.sh {image} {txt}"
+
+# POST to a webhook with curl (needs shell expansion)
+python3 main.py --save-on person \
+  --on-match-cmd "curl -s -X POST -F file=@{image} -F labels={labels} https://example.com/hook" \
+  --on-match-shell
+```
+
 ---
         ## Prerequisites
 

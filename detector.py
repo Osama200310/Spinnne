@@ -112,6 +112,7 @@ class Detector:
             default_match = True if save_set is None else False
             matched = default_match
             lines: list[str] = []
+            objects: list[str] = []
             if boxes is None or len(boxes) == 0:
                 lines.append("no_detections")
             else:
@@ -126,6 +127,7 @@ class Detector:
                     x1, y1, x2, y2 = map(float, xyxy[i])
                     score = float(conf[i])
                     cname = self._names.get(cid, str(cid)) if isinstance(self._names, dict) else str(cid)
+                    objects.append(cname)
                     lines.append(f"{cname} {score:.3f} {x1:.1f} {y1:.1f} {x2:.1f} {y2:.1f}")
                     wrote_any = True
                     if save_set is not None:
@@ -139,7 +141,7 @@ class Detector:
                     annotated = r.plot()
                 except Exception as e:
                     LOGGER.warning(f"Failed to prepare annotated image: {e}")
-            return (matched, lines, annotated)
+            return (matched, lines, annotated, objects)
         except Exception as e:
             LOGGER.warning(f"In-memory detection failed: {e}")
             return None
