@@ -144,7 +144,40 @@ class Detector:
             annotated = None
             if self.save_annotated and getattr(self, "_cv2", None) is not None:
                 try:
-                    annotated = r.plot()
+                    # If a save-on filter is provided, draw only matching detections.
+                    if self._save_on_norm:
+                        cv2 = self._cv2
+                        try:
+                            img = frame.copy()
+                        except Exception:
+                            # as a fallback, let Ultralytics draw everything
+                            annotated = r.plot()
+                            return (matched, lines, annotated, objects)
+                        total = 0
+                        drawn = 0
+                        if boxes is not None and len(getattr(boxes, 'xyxy', [])):
+                            xyxy = boxes.xyxy.cpu().numpy() if hasattr(boxes.xyxy, 'cpu') else boxes.xyxy
+                            conf = boxes.conf.cpu().numpy() if hasattr(boxes.conf, 'cpu') else boxes.conf
+                            cls = boxes.cls.cpu().numpy() if hasattr(boxes.cls, 'cpu') else boxes.cls
+                            for i in range(len(xyxy)):
+                                cid = int(cls[i])
+                                if getattr(self, "_allowed_cls", None) is not None and cid not in self._allowed_cls:
+                                    continue
+                                total += 1
+                                x1, y1, x2, y2 = map(int, xyxy[i])
+                                score = float(conf[i])
+                                cname = self._names.get(cid, str(cid)) if isinstance(self._names, dict) else str(cid)
+                                if self._canon(str(cname)) in self._save_on_norm or (str(cid) in self._save_on_norm):
+                                    drawn += 1
+                                    cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                                    label = f"{cname} {score:.2f}"
+                                    cv2.putText(img, label, (x1, max(0, y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                        annotated = img
+                        if total:
+                            LOGGER.debug("Annotated (filtered): drew %d/%d boxes matching --save-on", drawn, total)
+                    else:
+                        # No filtering requested → draw all detections using Ultralytics helper
+                        annotated = r.plot()
                 except Exception as e:
                     LOGGER.warning(f"Failed to prepare annotated image: {e}")
             return (matched, lines, annotated, objects)
@@ -200,9 +233,43 @@ class Detector:
                         f.write("no_detections\n")
             if self.save_annotated and self._cv2 is not None:
                 try:
-                    plotted = r.plot()  # returns a BGR numpy array
-                    out_path = image_path.with_name(image_path.stem + "_det.jpg")
-                    self._cv2.imwrite(str(out_path), plotted)
+                    cv2 = self._cv2
+                    # If a save-on filter is provided, draw only matching detections; otherwise use Ultralytics plot.
+                    if self._save_on_norm:
+                        img = cv2.imread(str(image_path))
+                        if img is None:
+                            # Fallback to Ultralytics plot if image can't be read here
+                            plotted = r.plot()
+                            out_path = image_path.with_name(image_path.stem + "_det.jpg")
+                            cv2.imwrite(str(out_path), plotted)
+                        else:
+                            total = 0
+                            drawn = 0
+                            if boxes is not None and len(getattr(boxes, 'xyxy', [])):
+                                xyxy = boxes.xyxy.cpu().numpy() if hasattr(boxes.xyxy, 'cpu') else boxes.xyxy
+                                conf = boxes.conf.cpu().numpy() if hasattr(boxes.conf, 'cpu') else boxes.conf
+                                cls = boxes.cls.cpu().numpy() if hasattr(boxes.cls, 'cpu') else boxes.cls
+                                for i in range(len(xyxy)):
+                                    cid = int(cls[i])
+                                    if getattr(self, "_allowed_cls", None) is not None and cid not in self._allowed_cls:
+                                        continue
+                                    total += 1
+                                    x1, y1, x2, y2 = map(int, xyxy[i])
+                                    score = float(conf[i])
+                                    cname = self._names.get(cid, str(cid)) if isinstance(self._names, dict) else str(cid)
+                                    if self._canon(str(cname)) in self._save_on_norm or (str(cid) in self._save_on_norm):
+                                        drawn += 1
+                                        cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                                        label = f"{cname} {score:.2f}"
+                                        cv2.putText(img, label, (x1, max(0, y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                            out_path = image_path.with_name(image_path.stem + "_det.jpg")
+                            cv2.imwrite(str(out_path), img)
+                            if total:
+                                LOGGER.debug("Annotated (filtered file path): drew %d/%d boxes matching --save-on", drawn, total)
+                    else:
+                        plotted = r.plot()  # returns a BGR numpy array
+                        out_path = image_path.with_name(image_path.stem + "_det.jpg")
+                        cv2.imwrite(str(out_path), plotted)
                 except Exception as e:
                     LOGGER.warning(f"Failed to save annotated image: {e}")
             return (txt_path, matched)
