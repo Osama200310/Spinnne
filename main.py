@@ -8,6 +8,8 @@ from typing import Optional, List, Tuple, Iterable
 import logging
 import subprocess
 import shlex
+import threading
+import queue
 
 from camera import Camera as CamExt  # local module
 from detector import Detector as DetectorExt  # local module
@@ -51,8 +53,8 @@ def _extract_best_score_from_lines(lines: list[str], save_on: Optional[list[str]
     targets = None
     if save_on:
         targets = { _canon(x) for x in save_on }
-        if "ball" in targets:
-            targets.add("sportsball")
+        #if "ball" in targets:
+        #    targets.add("sportsball")
     best: Optional[float] = None
     for line in lines:
         line = line.strip()
@@ -74,7 +76,7 @@ def _extract_best_score_from_lines(lines: list[str], save_on: Optional[list[str]
 
 
 def _filter_labels_for_save_on(labels: list[str], save_on: Optional[list[str]]) -> list[str]:
-    """Filter label names to only those allowed by save_on (case-insensitive, canonicalized).
+    """Filter label names to only those allowed by save_on (case-insensitive, canonicalized).vi
 
     - When save_on is None/empty: returns labels de-duplicated (preserving order).
     - Matching uses the same canonicalization as detection (alnum-only lowercase),
@@ -92,8 +94,8 @@ def _filter_labels_for_save_on(labels: list[str], save_on: Optional[list[str]]) 
     if not save_on:
         return deduped
     targets = { _canon(x) for x in save_on }
-    if "ball" in targets:
-        targets.add("sportsball")
+    #if "ball" in targets:
+     #   targets.add("sportsball")
     filtered: list[str] = []
     for l in deduped:
         lc = _canon(l)
@@ -183,7 +185,7 @@ def _post_on_match(*, url: str, image: Path, txt: Optional[Path], annotated: Opt
                 # fallback to raw conversion
                 data[score_field_name] = str(score)
         # Include objects field if provided (even in only_file mode)
-        LOGGER.warning("labels: %s", labels)
+        LOGGER.debug("labels: %s", labels)
         if labels:
             try:
                 # de-duplicate while preserving order
@@ -197,14 +199,16 @@ def _post_on_match(*, url: str, image: Path, txt: Optional[Path], annotated: Opt
                         uniq.append(s)
                         seen.add(s)
                 if uniq:
-                    data[objects_field_name] = ";".join(uniq)
+                    data[objects_field_name] = "Feuer"
+                    #data[objects_field_name] = ";".join(uniq)
             except Exception:
                 try:
-                    data[objects_field_name] = ";".join(map(str, labels))
+                    data[objects_field_name] = "Feuer"
+                    #data[objects_field_name] = ";".join(map(str, labels))
                 except Exception:
                     pass
         files = {}
-        # Primary image field
+        # Primary image field (use the captured image, not the annotated preview)
         try:
             files[image_field_name] = (annotated.name, annotated.open("rb"), "image/jpeg")
         except Exception as e:
@@ -275,6 +279,39 @@ def handle_sigint(sig, frame):
     global running
     LOGGER.info("Stopping timelapse…")
     running = False
+
+
+# --- Asynchronous upload support ---
+POST_QUEUE: "queue.Queue[tuple]" = queue.Queue(maxsize=64)
+
+
+def post_async(**kwargs) -> bool:
+    """Enqueue a non-blocking HTTP POST of the captured image.
+    Returns True if enqueued, False if the queue is full (request dropped).
+    """
+    try:
+        POST_QUEUE.put_nowait((_post_on_match, kwargs))
+        return True
+    except queue.Full:
+        return False
+
+
+def _post_worker() -> None:
+    """Background worker that performs POST requests from the queue."""
+    while running or not POST_QUEUE.empty():
+        try:
+            fn, kwargs = POST_QUEUE.get(timeout=0.5)
+        except queue.Empty:
+            continue
+        try:
+            fn(**kwargs)
+        except Exception as e:
+            LOGGER.warning("POST task failed: %s", e)
+        finally:
+            try:
+                POST_QUEUE.task_done()
+            except Exception:
+                pass
 
 
 
@@ -357,6 +394,10 @@ def parse_args():
 
 def main():
     args = parse_args()
+
+    # Start background POST worker thread for async uploads
+    worker = threading.Thread(target=_post_worker, name="post-worker", daemon=True)
+    worker.start()
 
     # Basic validation for callback args
     if getattr(args, "on_match_timeout", None) and not getattr(args, "on_match_sync", False):
@@ -499,7 +540,7 @@ def main():
                                 except Exception:
                                     score_lines = []
                                 best_score = _extract_best_score_from_lines(score_lines, args.save_on)
-                                _post_on_match(
+                                ok = post_async(
                                     url=args.post_url,
                                     image=filename,
                                     txt=txt_path,
@@ -516,6 +557,8 @@ def main():
                                     score=best_score,
                                     score_field_name=getattr(args, 'post_score_field', 'score'),
                                 )
+                                if not ok:
+                                    LOGGER.warning("Upload queue full; dropping upload for %s", filename.name)
                 else:
                     matched, det_lines, annotated, objects = result
                     LOGGER.info(f"Found: {objects}")
@@ -561,7 +604,7 @@ def main():
                             # Optional HTTP POST
                             if getattr(args, 'post_url', None):
                                 best_score = _extract_best_score_from_lines(det_lines, args.save_on)
-                                _post_on_match(
+                                ok = post_async(
                                     url=args.post_url,
                                     image=filename,
                                     txt=txt_path,
@@ -578,6 +621,8 @@ def main():
                                     score=best_score,
                                     score_field_name=getattr(args, 'post_score_field', 'score'),
                                 )
+                                if not ok:
+                                    LOGGER.warning("Upload queue full; dropping upload for %s", filename.name)
                         except Exception as e:
                             LOGGER.warning(f"Failed to save matched capture: {e}")
                     else:
@@ -647,7 +692,7 @@ def main():
                             except Exception:
                                 score_lines = []
                             best_score = _extract_best_score_from_lines(score_lines, args.save_on)
-                            _post_on_match(
+                            ok = post_async(
                                 url=args.post_url,
                                 image=filename,
                                 txt=txt_path,
@@ -664,12 +709,23 @@ def main():
                                 score=best_score,
                                 score_field_name=getattr(args, 'post_score_field', 'score'),
                             )
+                            if not ok:
+                                LOGGER.warning("Upload queue full; dropping upload for %s", filename.name)
 
             # Sleep after capture so the first image is immediate
             for _ in range(interval):
                 if not running:
                     break
                 time.sleep(1)
+
+    # After loop exits, allow background POSTs to drain briefly
+    try:
+        # Wait up to a short grace period for uploads to finish; adjust if needed
+        start_wait = time.time()
+        while not POST_QUEUE.empty() and time.time() - start_wait < 5:
+            time.sleep(0.1)
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":

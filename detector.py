@@ -170,7 +170,7 @@ class Detector:
                                 if self._canon(str(cname)) in self._save_on_norm or (str(cid) in self._save_on_norm):
                                     drawn += 1
                                     cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                                    label = f"{cname} {score:.2f}"
+                                    label = f"Feuer {score:.2f}"
                                     cv2.putText(img, label, (x1, max(0, y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
                         annotated = img
                         if total:
@@ -260,7 +260,7 @@ class Detector:
                                     if self._canon(str(cname)) in self._save_on_norm or (str(cid) in self._save_on_norm):
                                         drawn += 1
                                         cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                                        label = f"{cname} {score:.2f}"
+                                        label = f"Feuer {score:.2f}"
                                         cv2.putText(img, label, (x1, max(0, y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
                             out_path = image_path.with_name(image_path.stem + "_det.jpg")
                             cv2.imwrite(str(out_path), img)
