@@ -9,3 +9,16 @@ ultralytics>=8.2.0
 # On Pi (aarch64/arm), if the pip wheel is not available or too heavy, you can install system OpenCV instead:
 #   sudo apt install -y python3-opencv
 # In that case, create your venv with --system-site-packages so it can see apt packages.
+
+# Python dependencies for capture and detection
+# Note: Picamera2 is installed via apt on Raspberry Pi OS, not pip.
+# OpenCV is used for webcam capture (non-Pi) and for saving annotated images. Use the headless build to avoid GUI deps.
+numpy>=1.24
+opencv-python-headless>=4.8
+ultralytics>=8.2.0
+requests>=2.31
+
+# Raspberry Pi note:
+# On Pi (aarch64/arm), if the pip wheel is not available or too heavy, you can install system OpenCV instead:
+#   sudo apt install -y python3-opencv
+# In that case, create your venv with --system-site-packages so it can see apt packages.

@@ -39,7 +39,14 @@ class Detector:
         self.yolo_classes = yolo_classes
         # Target-saving filter
         self.save_on = [str(x).strip() for x in save_on] if save_on else None
-        self._save_on_norm = {str(x).strip().lower() for x in save_on} if save_on else None
+        # Canonicalize save_on terms to handle spaces, hyphens, underscores, etc.
+        def _canon(s: str) -> str:
+            return "".join(ch for ch in str(s).strip().lower() if ch.isalnum())
+        self._canon = _canon
+        self._save_on_norm = {self._canon(x) for x in save_on} if save_on else None
+        # alias support: treat plain "ball" as YOLO's "sports ball"
+        if self._save_on_norm is not None and "ball" in self._save_on_norm:
+            self._save_on_norm.add("sportsball")
 
         self._model = None
         self._names = None
@@ -59,28 +66,26 @@ class Detector:
                 allowed = set()
                 # names mapping: id -> name
                 name_map = self._names if isinstance(self._names, dict) else {}
-
-                def norm(s: str) -> str:
-                    return s.strip().lower().replace("_", " ")
-
-                # Add common alias mapping for sports ball
-                alias_map = {"ball": "sports ball"}
+                # Build canonical name -> id map (alnum-only lowercase), e.g. "sports ball"/"sports-ball" → "sportsball"
+                canon_name_map = {self._canon(cname): int(cid) for cid, cname in name_map.items()}
                 for item in self.yolo_classes:
                     if isinstance(item, int):
                         allowed.add(int(item))
                         continue
-                    s = str(item)
+                    s = str(item).strip()
+                    # allow numeric strings
                     if s.isdigit():
                         allowed.add(int(s))
                         continue
-                    s_norm = norm(s)
-                    if s_norm in alias_map:
-                        s_norm = alias_map[s_norm]
-                    # find id by name
-                    for cid, cname in name_map.items():
-                        if norm(str(cname)) == s_norm:
-                            allowed.add(int(cid))
-                            break
+                    s_can = self._canon(s)
+                    # alias: plain "ball" → YOLO's "sports ball" if present
+                    if s_can == "ball" and "sportsball" in canon_name_map:
+                        allowed.add(canon_name_map["sportsball"])
+                        continue
+                    # match by canonicalized class name
+                    if s_can in canon_name_map:
+                        allowed.add(canon_name_map[s_can])
+                        continue
                 if allowed:
                     self._allowed_cls = allowed
             if self.save_annotated:
@@ -100,8 +105,9 @@ class Detector:
         if not self.enabled:
             return None
         try:
+            # use canonical normalization (lowercase alnum only)
             def norm(s: str) -> str:
-                return s.strip().lower().replace("_", " ")
+                return self._canon(s)
 
             results = self._model(frame, conf=self.conf, imgsz=self.imgsz, verbose=False) if self._model else None
             if results is None:
@@ -156,8 +162,9 @@ class Detector:
         if not self.enabled:
             return None
         try:
+            # use canonical normalization (lowercase alnum only)
             def norm(s: str) -> str:
-                return s.strip().lower().replace("_", " ")
+                return self._canon(s)
 
             txt_path = image_path.with_suffix('.txt')
             save_set = self._save_on_norm

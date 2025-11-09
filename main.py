@@ -36,12 +36,49 @@ def _extract_labels_from_lines(lines: list[str]) -> list[str]:
     return uniq
 
 
+def _canon(s: str) -> str:
+    """Canonicalize label for matching: lowercase, alnum only."""
+    return "".join(ch for ch in str(s).strip().lower() if ch.isalnum())
+
+
+def _extract_best_score_from_lines(lines: list[str], save_on: Optional[list[str]]) -> Optional[float]:
+    """Return the highest detection confidence.
+
+    If save_on is provided, consider only detections whose label matches any of save_on
+    (case-insensitive, canonicalized). Otherwise consider all detections.
+    Returns None if no candidates found.
+    """
+    targets = None
+    if save_on:
+        targets = { _canon(x) for x in save_on }
+        if "ball" in targets:
+            targets.add("sportsball")
+    best: Optional[float] = None
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("no_detections"):
+            continue
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        label = parts[0]
+        try:
+            score = float(parts[1])
+        except ValueError:
+            continue
+        if targets is not None and _canon(label) not in targets:
+            continue
+        if best is None or score > best:
+            best = score
+    return best
+
+
 def _run_on_match(cmd_template: str, *, image: Path, txt: Optional[Path], annotated: Optional[Path], labels: list[str], timestamp: str, save_dir: Path, sync: bool = False, timeout: Optional[int] = None, shell: bool = False) -> None:
     """Run an external command when a match occurs.
 
     Placeholders in cmd_template:
       {image} {txt} {annotated} {labels} {timestamp} {save_dir}
-    PatInit commiths are substituted as absolute paths. {labels} is a comma-separated list.
+    Paths are substituted as absolute paths. {labels} is a comma-separated list.
     """
     try:
         ctx = {
@@ -78,6 +115,109 @@ def _run_on_match(cmd_template: str, *, image: Path, txt: Optional[Path], annota
                 LOGGER.warning("Failed to start on-match command: %s", e)
     except Exception as e:
         LOGGER.warning("Failed to prepare on-match command: %s", e)
+
+
+def _post_on_match(*, url: str, image: Path, txt: Optional[Path], annotated: Optional[Path], labels: list[str], timestamp: str, save_dir: Path, timeout: Optional[int] = None, headers: Optional[dict] = None, include_annotated: bool = False, image_field_name: str = "image", duplicate_file_field: bool = False, only_file: bool = False, score: Optional[float] = None, score_field_name: str = "score", objects: Optional[list[str]] = None, objects_field_name: str = "objects") -> None:
+    """POST the captured image (and optional artifacts) to a web server.
+
+    Sends multipart/form-data with fields:
+      - labels: comma-separated labels (omitted if only_file=True)
+      - timestamp: ISO-like timestamp string used in filename (omitted if only_file=True)
+      - save_dir: absolute path of the save directory (informational) (omitted if only_file=True)
+      - score: best detection score (if provided). Included even when only_file=True.
+      - objects: semicolon-separated detected class names (if provided). Included even when only_file=True.
+    Files:
+      - <image_field_name>: the captured JPEG (default key: image)
+      - file: optional duplicate of image for FastAPI-style endpoints (if duplicate_file_field=True)
+      - txt: YOLO-like detections text (if available and only_file=False)
+      - annotated: annotated JPEG with boxes (if available and include_annotated=True and only_file=False)
+    """
+    try:
+        try:
+            import requests  # type: ignore
+        except Exception:
+            LOGGER.warning("'requests' is not installed; cannot POST to %s", url)
+            return
+
+        data = {}
+        if not only_file:
+            data = {
+                "labels": ",".join(labels),
+                "timestamp": timestamp,
+                "save_dir": str(save_dir.resolve()),
+            }
+        # Include score field if provided (even in only_file mode)
+        if score is not None:
+            try:
+                data[score_field_name] = f"{float(score):.3f}"
+            except Exception:
+                # fallback to raw conversion
+                data[score_field_name] = str(score)
+        # Include objects field if provided (even in only_file mode)
+        if objects:
+            try:
+                # de-duplicate while preserving order
+                seen = set()
+                uniq = []
+                for o in objects:
+                    s = str(o).strip()
+                    if not s:
+                        continue
+                    if s not in seen:
+                        uniq.append(s)
+                        seen.add(s)
+                if uniq:
+                    data[objects_field_name] = ";".join(uniq)
+            except Exception:
+                try:
+                    data[objects_field_name] = ";".join(map(str, objects))
+                except Exception:
+                    pass
+        files = {}
+        # Primary image field
+        try:
+            files[image_field_name] = (image.name, image.open("rb"), "image/jpeg")
+        except Exception as e:
+            LOGGER.warning("Failed to open image for POST: %s", e)
+            return
+        # Optional duplicate under 'file' for compatibility (requires a separate handle)
+        if not only_file and duplicate_file_field and image_field_name != "file":
+            try:
+                files["file"] = (image.name, image.open("rb"), "image/jpeg")
+            except Exception as e:
+                LOGGER.debug("Failed to attach duplicate 'file' field: %s", e)
+        if not only_file and txt and txt.exists():
+            try:
+                files["txt"] = (txt.name, txt.open("rb"), "text/plain")
+            except Exception as e:
+                LOGGER.debug("Failed to attach txt for POST: %s", e)
+        if not only_file and include_annotated and annotated and Path(annotated).exists():
+            try:
+                files["annotated"] = (Path(annotated).name, Path(annotated).open("rb"), "image/jpeg")
+            except Exception as e:
+                LOGGER.debug("Failed to attach annotated for POST: %s", e)
+
+        LOGGER.info("POSTing image to %s", url)
+        try:
+            resp = requests.post(url, data=data if data else None, files=files, headers=headers or {}, timeout=timeout or 15)
+            LOGGER.info("POST status: %s", resp.status_code)
+            if resp.status_code >= 400:
+                # Print a helpful hint for common 422 "missing 'file'" cases
+                msg = resp.text[:1000] if hasattr(resp, "text") else str(resp)
+                if resp.status_code == 422 and ("\"file\"" in msg or "'file'" in msg) and "Field required" in msg:
+                    LOGGER.warning("Server reports missing 'file' field. Try --post-image-field file or --post-compat-file-field.")
+                LOGGER.warning("POST failed: %s", msg)
+        except requests.exceptions.RequestException as e:
+            LOGGER.warning("POST request failed: %s", e)
+        finally:
+            # Close any file handles we opened in 'files'
+            for k, v in list(files.items()):
+                try:
+                    v[1].close()
+                except Exception:
+                    pass
+    except Exception as e:
+        LOGGER.warning("Unexpected error in POST helper: %s", e)
 
 
 # Lazy imports for detection (ultralytics / cv2) are inside Detector
@@ -171,6 +311,17 @@ def parse_args():
     p.add_argument("--on-match-timeout", type=int, default=None, help="Timeout in seconds for synchronous on-match command")
     p.add_argument("--on-match-shell", action="store_true", help="Run the on-match command via shell=True (use carefully)")
 
+    # HTTP POST on match
+    p.add_argument("--post-url", type=str, help="If set, POST the saved image to this URL when a required label is detected")
+    p.add_argument("--post-timeout", type=int, default=15, help="Timeout in seconds for POST request (default: 15)")
+    p.add_argument("--post-include-annotated", action="store_true", help="Include annotated _det.jpg in POST if available")
+    p.add_argument("--post-header", action="append", default=[], help="Extra HTTP header in the form Key:Value. May be repeated")
+    p.add_argument("--post-image-field", type=str, default="image", help="Multipart field name to use for the image (default: image). Example: file for FastAPI UploadFile")
+    p.add_argument("--post-compat-file-field", action="store_true", help="Also send the image under field 'file' for compatibility with servers expecting that name")
+    p.add_argument("--post-only-file", action="store_true", help="Send only the image as a single multipart part (no extra form fields or attachments)")
+    p.add_argument("--post-score-field", type=str, default="score", help="Form field name to use for the confidence score (default: score)")
+    p.add_argument("--post-objects-field", type=str, default="objects", help="Form field name to use for the detected objects list (semicolon-separated). Default: objects")
+
     return p.parse_args()
 
 
@@ -180,6 +331,18 @@ def main():
     # Basic validation for callback args
     if getattr(args, "on_match_timeout", None) and not getattr(args, "on_match_sync", False):
         LOGGER.warning("--on-match-timeout has no effect without --on-match-sync")
+
+    # Prepare POST headers dict once
+    post_headers: dict[str, str] = {}
+    if getattr(args, "post_header", None):
+        for h in args.post_header:
+            if not h:
+                continue
+            if ":" not in h:
+                LOGGER.warning("Ignoring malformed --post-header (expected Key:Value): %s", h)
+                continue
+            key, val = h.split(":", 1)
+            post_headers[key.strip()] = val.strip()
 
     save_dir = args.save_dir
     interval = args.interval
@@ -295,6 +458,34 @@ def main():
                                 timeout=getattr(args, 'on_match_timeout', None),
                                 shell=getattr(args, 'on_match_shell', False),
                             )
+                            if getattr(args, 'post_url', None):
+                                # Compute score from txt if available
+                                score_lines: list[str] = []
+                                try:
+                                    with (txt_path if txt_path else filename.with_suffix('.txt')).open('r') as f:
+                                        score_lines = [ln.strip() for ln in f if ln.strip()]
+                                except Exception:
+                                    score_lines = []
+                                best_score = _extract_best_score_from_lines(score_lines, args.save_on)
+                                _post_on_match(
+                                    url=args.post_url,
+                                    image=filename,
+                                    txt=txt_path,
+                                    annotated=annotated_path,
+                                    labels=list(dict.fromkeys(labels)),
+                                    timestamp=ts,
+                                    save_dir=save_dir,
+                                    timeout=getattr(args, 'post_timeout', 15),
+                                    headers=post_headers,
+                                    include_annotated=getattr(args, 'post_include_annotated', False),
+                                    image_field_name=getattr(args, 'post_image_field', 'image'),
+                                    duplicate_file_field=getattr(args, 'post_compat_file_field', False),
+                                    only_file=getattr(args, 'post_only_file', False),
+                                    score=best_score,
+                                    score_field_name=getattr(args, 'post_score_field', 'score'),
+                                    objects=list(dict.fromkeys(labels)),
+                                    objects_field_name=getattr(args, 'post_objects_field', 'objects'),
+                                )
                 else:
                     matched, det_lines, annotated, objects = result
                     LOGGER.info(f"Found: {objects}")
@@ -320,9 +511,10 @@ def main():
                                     annotated_path = det_img
                                 except Exception as e:
                                     LOGGER.warning(f"Failed to save annotated image: {e}")
+                            # Prepare labels for callbacks/POST
+                            labels = _extract_labels_from_lines(det_lines)
                             # On-match callback (in-memory path)
                             if args.on_match_cmd:
-                                labels = _extract_labels_from_lines(det_lines)
                                 _run_on_match(
                                     args.on_match_cmd,
                                     image=filename,
@@ -334,6 +526,28 @@ def main():
                                     sync=getattr(args, 'on_match_sync', False),
                                     timeout=getattr(args, 'on_match_timeout', None),
                                     shell=getattr(args, 'on_match_shell', False),
+                                )
+                            # Optional HTTP POST
+                            if getattr(args, 'post_url', None):
+                                best_score = _extract_best_score_from_lines(det_lines, args.save_on)
+                                _post_on_match(
+                                    url=args.post_url,
+                                    image=filename,
+                                    txt=txt_path,
+                                    annotated=annotated_path,
+                                    labels=labels,
+                                    timestamp=ts,
+                                    save_dir=save_dir,
+                                    timeout=getattr(args, 'post_timeout', 15),
+                                    headers=post_headers,
+                                    include_annotated=getattr(args, 'post_include_annotated', False),
+                                    image_field_name=getattr(args, 'post_image_field', 'image'),
+                                    duplicate_file_field=getattr(args, 'post_compat_file_field', False),
+                                    only_file=getattr(args, 'post_only_file', False),
+                                    score=best_score,
+                                    score_field_name=getattr(args, 'post_score_field', 'score'),
+                                    objects=list(dict.fromkeys(objects if isinstance(objects, list) else labels)),
+                                    objects_field_name=getattr(args, 'post_objects_field', 'objects'),
                                 )
                         except Exception as e:
                             LOGGER.warning(f"Failed to save matched capture: {e}")
@@ -393,6 +607,34 @@ def main():
                             timeout=getattr(args, 'on_match_timeout', None),
                             shell=getattr(args, 'on_match_shell', False),
                         )
+                        if getattr(args, 'post_url', None):
+                            # Compute score from txt if available
+                            score_lines: list[str] = []
+                            try:
+                                with (txt_path if txt_path else filename.with_suffix('.txt')).open('r') as f:
+                                    score_lines = [ln.strip() for ln in f if ln.strip()]
+                            except Exception:
+                                score_lines = []
+                            best_score = _extract_best_score_from_lines(score_lines, args.save_on)
+                            _post_on_match(
+                                url=args.post_url,
+                                image=filename,
+                                txt=txt_path,
+                                annotated=annotated_path,
+                                labels=list(dict.fromkeys(labels)),
+                                timestamp=ts,
+                                save_dir=save_dir,
+                                timeout=getattr(args, 'post_timeout', 15),
+                                headers=post_headers,
+                                include_annotated=getattr(args, 'post_include_annotated', False),
+                                image_field_name=getattr(args, 'post_image_field', 'image'),
+                                duplicate_file_field=getattr(args, 'post_compat_file_field', False),
+                                only_file=getattr(args, 'post_only_file', False),
+                                score=best_score,
+                                score_field_name=getattr(args, 'post_score_field', 'score'),
+                                objects=list(dict.fromkeys(labels)),
+                                objects_field_name=getattr(args, 'post_objects_field', 'objects'),
+                            )
 
             # Sleep after capture so the first image is immediate
             for _ in range(interval):
