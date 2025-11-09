@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Image Upload Demo</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #ffffff;
+      --fg: #1f2328;
+      --muted: #57606a;
+      --card: #f6f8fa;
+      --accent: #0969da;
+      --ok: #1a7f37;
+      --warn: #9a6700;
+      --err: #d1242f;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0d1117;
+        --fg: #e6edf3;
+        --muted: #8b949e;
+        --card: #161b22;
+        --accent: #2f81f7;
+        --ok: #3fb950;
+        --warn: #bb8800;
+        --err: #ff7b72;
+      }
+    }
+    html, body { height: 100%; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin: 0; background: var(--bg); color: var(--fg); }
+    .wrap { max-width: 900px; margin: 0 auto; padding: 2rem 1rem 4rem; }
+    h1 { font-size: 1.6rem; margin: 0 0 0.5rem; }
+    p { color: var(--muted); }
+    .card { background: var(--card); border: 1px solid rgba(128,128,128,.25); border-radius: 10px; padding: 1rem; }
+    .grid { display: grid; grid-template-columns: 1fr; gap: 1rem; }
+    @media (min-width: 800px) { .grid { grid-template-columns: 1.2fr .8fr; } }
+    label { display:block; font-weight: 600; margin-bottom: .25rem; }
+    input[type="file"], input[type="text"], input[type="number"] {
+      display:block; width: 100%; padding: .6rem .7rem; border-radius: 8px; border: 1px solid rgba(128,128,128,.35); background: transparent; color: inherit;
+    }
+    .row { display:flex; gap:.75rem; align-items: center; }
+    .actions { display:flex; gap:.5rem; margin-top: .75rem; align-items:center; }
+    button { background: var(--accent); color: white; border: 0; padding: .6rem 1rem; border-radius: 8px; cursor: pointer; font-weight: 600; }
+    button[disabled] { opacity: .65; cursor:not-allowed; }
+    .muted { color: var(--muted); }
+    .ok { color: var(--ok); }
+    .err { color: var(--err); }
+    pre { background: var(--card); border: 1px solid rgba(128,128,128,.25); border-radius: 8px; padding: .75rem; overflow:auto; }
+    code { background: transparent; padding: 0; }
+    img.preview { max-width: 100%; height: auto; display:block; border-radius: 8px; border: 1px solid rgba(128,128,128,.25); }
+    .small { font-size: .9rem; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Image Upload Demo</h1>
+    <p class="small">This page lets you try the <code>POST /api/upload</code> endpoint. It accepts an image file and optional string fields <code>score</code> and <code>objects</code> and stores them server-side.</p>
+
+    <div class="grid">
+      <div class="card">
+        <form id="uploadForm">
+          <div style="margin-bottom:.75rem;">
+            <label for="fileInput">Image file (required)</label>
+            <input id="fileInput" name="file" type="file" accept="image/*" required />
+          </div>
+          <div style="margin-bottom:.5rem;">
+            <label for="scoreInput">Score (optional, any string)</label>
+            <input id="scoreInput" name="score" type="text" placeholder="e.g. 0.87 or good/bad" />
+          </div>
+          <div style="margin-bottom:.5rem;">
+            <label for="objectsInput">Objects (optional, any string)</label>
+            <input id="objectsInput" name="objects" type="text" placeholder="e.g. person, car or JSON string" />
+          </div>
+          <div class="actions">
+            <button id="btnUpload" type="submit">Upload</button>
+            <button id="btnReset" type="button" class="muted">Reset</button>
+            <span id="status" class="muted" aria-live="polite"></span>
+          </div>
+        </form>
+        <div id="result" style="margin-top:1rem; display:none;">
+          <div id="json" class="small"></div>
+          <div id="previewWrap" style="margin-top:.75rem; display:none;">
+            <div class="small muted" style="margin-bottom:.25rem;">Preview:</div>
+            <img id="preview" class="preview" alt="uploaded preview" />
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3 style="margin-top:0;">cURL examples</h3>
+        <p class="small">These commands target your running server. The first includes both <code>score</code> and <code>objects</code>; the second omits them.</p>
+        <pre><code id="curlWith">curl -F "file=@/path/to/image.jpg" -F "score=0.87" -F "objects=person,car" http://localhost:8080/api/upload</code></pre>
+        <pre><code id="curlNo">curl -F "file=@/path/to/image.jpg" http://localhost:8080/api/upload</code></pre>
+        <p class="small muted">Tip: change the path after <code>@</code> to an image on your machine.</p>
+      </div>
+    </div>
+
+    <p class="small muted" style="margin-top:1rem;">
+      When running locally, this page is served from <code>/</code>. Uploaded files are available under <code>/uploads/&lt;filename&gt;</code>.
+    </p>
+  </div>
+
+  <script>
+    const form = document.getElementById('uploadForm');
+    const fileInput = document.getElementById('fileInput');
+    const scoreInput = document.getElementById('scoreInput');
+    const btnUpload = document.getElementById('btnUpload');
+    const objectsInput = document.getElementById('objectsInput');
+    const btnReset = document.getElementById('btnReset');
+    const statusEl = document.getElementById('status');
+    const resultEl = document.getElementById('result');
+    const jsonEl = document.getElementById('json');
+    const previewWrap = document.getElementById('previewWrap');
+    const previewImg = document.getElementById('preview');
+
+    function setBusy(b) {
+      btnUpload.disabled = b;
+      statusEl.textContent = b ? 'Uploading…' : '';
+    }
+
+    btnReset.addEventListener('click', () => {
+      form.reset();
+      resultEl.style.display = 'none';
+      previewWrap.style.display = 'none';
+      jsonEl.textContent = '';
+      previewImg.removeAttribute('src');
+      statusEl.textContent = '';
+    });
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const file = fileInput.files && fileInput.files[0];
+      if (!file) {
+        alert('Please choose an image file first.');
+        return;
+      }
+      const fd = new FormData();
+      fd.append('file', file);
+      if (scoreInput.value.trim() !== '') {
+        fd.append('score', scoreInput.value.trim());
+      }
+      if (objectsInput.value.trim() !== '') {
+        fd.append('objects', objectsInput.value.trim());
+      }
+
+      try {
+        setBusy(true);
+        const res = await fetch('/api/upload', { method: 'POST', body: fd });
+        let data;
+        if (!res.ok) {
+          try { data = await res.json(); } catch { data = { detail: res.statusText }; }
+          throw new Error(data && (data.detail || data.message) || `HTTP ${res.status}`);
+        }
+        data = await res.json();
+        resultEl.style.display = '';
+        jsonEl.textContent = JSON.stringify(data, null, 2);
+        if (data && data.url) {
+          previewImg.src = data.url;
+          previewWrap.style.display = '';
+        } else {
+          previewWrap.style.display = 'none';
+          previewImg.removeAttribute('src');
+        }
+        statusEl.textContent = 'Done';
+        setTimeout(() => { if (statusEl.textContent === 'Done') statusEl.textContent = ''; }, 1500);
+      } catch (err) {
+        resultEl.style.display = '';
+        jsonEl.textContent = JSON.stringify({ error: String(err.message || err) }, null, 2);
+        previewWrap.style.display = 'none';
+        previewImg.removeAttribute('src');
+        statusEl.textContent = '';
+      } finally {
+        setBusy(false);
+      }
+    });
+
+    // Fill cURL examples with the current origin if possible
+    const curlWith = document.getElementById('curlWith');
+    const curlNo = document.getElementById('curlNo');
+    try {
+      const base = (location.origin || 'http://localhost:8080');
+      curlWith.textContent = `curl -F "file=@/path/to/image.jpg" -F "score=0.87" -F "objects=person,car" ${base}/api/upload`;
+      curlNo.textContent = `curl -F "file=@/path/to/image.jpg" ${base}/api/upload`;
+    } catch {}
+  </script>
+</body>
+</html>
