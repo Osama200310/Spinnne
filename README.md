@@ -6,6 +6,10 @@ This project captures still images on a schedule and can optionally run object d
 
 Images are saved to a folder at a fixed interval. If detection is enabled, a sidecar `.txt` with detections is written and (optionally) an annotated preview image `_det.jpg` is saved. You can now also keep images only when specific labels are detected using `--save-on`.
 
+example
+python3 main.py --model yolov8n.pt --conf 0.25 --imgsz 416 --interval 5 --save-on orange apple ball person --post-url "http://10.30.15.157:8080/api/upload" --post-image-field file --post-only-file --post-score-field score --post-score-field objects
+
+
 ---
 ## Quick start
 

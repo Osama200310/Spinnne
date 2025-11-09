@@ -154,12 +154,13 @@ def _post_on_match(*, url: str, image: Path, txt: Optional[Path], annotated: Opt
                 # fallback to raw conversion
                 data[score_field_name] = str(score)
         # Include objects field if provided (even in only_file mode)
-        if objects:
+        LOGGER.warning("labels: %s", labels)
+        if labels:
             try:
                 # de-duplicate while preserving order
                 seen = set()
                 uniq = []
-                for o in objects:
+                for o in labels:
                     s = str(o).strip()
                     if not s:
                         continue
@@ -170,20 +171,20 @@ def _post_on_match(*, url: str, image: Path, txt: Optional[Path], annotated: Opt
                     data[objects_field_name] = ";".join(uniq)
             except Exception:
                 try:
-                    data[objects_field_name] = ";".join(map(str, objects))
+                    data[objects_field_name] = ";".join(map(str, labels))
                 except Exception:
                     pass
         files = {}
         # Primary image field
         try:
-            files[image_field_name] = (image.name, image.open("rb"), "image/jpeg")
+            files[image_field_name] = (annotated.name, annotated.open("rb"), "image/jpeg")
         except Exception as e:
             LOGGER.warning("Failed to open image for POST: %s", e)
             return
         # Optional duplicate under 'file' for compatibility (requires a separate handle)
         if not only_file and duplicate_file_field and image_field_name != "file":
             try:
-                files["file"] = (image.name, image.open("rb"), "image/jpeg")
+                files["file"] = (annotated.name, annotated.open("rb"), "image/jpeg")
             except Exception as e:
                 LOGGER.debug("Failed to attach duplicate 'file' field: %s", e)
         if not only_file and txt and txt.exists():
@@ -483,8 +484,7 @@ def main():
                                     only_file=getattr(args, 'post_only_file', False),
                                     score=best_score,
                                     score_field_name=getattr(args, 'post_score_field', 'score'),
-                                    objects=list(dict.fromkeys(labels)),
-                                    objects_field_name=getattr(args, 'post_objects_field', 'objects'),
+                                    score_field_objects=getattr(args, 'post_score_field', 'score'),
                                 )
                 else:
                     matched, det_lines, annotated, objects = result
@@ -546,8 +546,6 @@ def main():
                                     only_file=getattr(args, 'post_only_file', False),
                                     score=best_score,
                                     score_field_name=getattr(args, 'post_score_field', 'score'),
-                                    objects=list(dict.fromkeys(objects if isinstance(objects, list) else labels)),
-                                    objects_field_name=getattr(args, 'post_objects_field', 'objects'),
                                 )
                         except Exception as e:
                             LOGGER.warning(f"Failed to save matched capture: {e}")
@@ -632,8 +630,6 @@ def main():
                                 only_file=getattr(args, 'post_only_file', False),
                                 score=best_score,
                                 score_field_name=getattr(args, 'post_score_field', 'score'),
-                                objects=list(dict.fromkeys(labels)),
-                                objects_field_name=getattr(args, 'post_objects_field', 'objects'),
                             )
 
             # Sleep after capture so the first image is immediate
