@@ -73,6 +73,35 @@ def _extract_best_score_from_lines(lines: list[str], save_on: Optional[list[str]
     return best
 
 
+def _filter_labels_for_save_on(labels: list[str], save_on: Optional[list[str]]) -> list[str]:
+    """Filter label names to only those allowed by save_on (case-insensitive, canonicalized).
+
+    - When save_on is None/empty: returns labels de-duplicated (preserving order).
+    - Matching uses the same canonicalization as detection (alnum-only lowercase),
+      and treats plain 'ball' as alias for 'sports ball'.
+    """
+    if not labels:
+        return []
+    # de-duplicate first while preserving order
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for l in labels:
+        if l not in seen:
+            deduped.append(l)
+            seen.add(l)
+    if not save_on:
+        return deduped
+    targets = { _canon(x) for x in save_on }
+    if "ball" in targets:
+        targets.add("sportsball")
+    filtered: list[str] = []
+    for l in deduped:
+        lc = _canon(l)
+        if lc in targets or l in targets:
+            filtered.append(l)
+    return filtered
+
+
 def _run_on_match(cmd_template: str, *, image: Path, txt: Optional[Path], annotated: Optional[Path], labels: list[str], timestamp: str, save_dir: Path, sync: bool = False, timeout: Optional[int] = None, shell: bool = False) -> None:
     """Run an external command when a match occurs.
 
@@ -447,12 +476,14 @@ def main():
                                 pass
                             det_img_path = filename.with_name(filename.stem + "_det.jpg")
                             annotated_path = det_img_path if det_img_path.exists() else None
+                            # Filter labels to only those in --save-on (if provided)
+                            filtered_labels = _filter_labels_for_save_on(labels, args.save_on)
                             _run_on_match(
                                 args.on_match_cmd,
                                 image=filename,
                                 txt=txt_path,
                                 annotated=annotated_path,
-                                labels=list(dict.fromkeys(labels)),
+                                labels=filtered_labels,
                                 timestamp=ts,
                                 save_dir=save_dir,
                                 sync=getattr(args, 'on_match_sync', False),
@@ -473,7 +504,7 @@ def main():
                                     image=filename,
                                     txt=txt_path,
                                     annotated=annotated_path,
-                                    labels=list(dict.fromkeys(labels)),
+                                    labels=filtered_labels,
                                     timestamp=ts,
                                     save_dir=save_dir,
                                     timeout=getattr(args, 'post_timeout', 15),
@@ -484,7 +515,6 @@ def main():
                                     only_file=getattr(args, 'post_only_file', False),
                                     score=best_score,
                                     score_field_name=getattr(args, 'post_score_field', 'score'),
-                                    score_field_objects=getattr(args, 'post_score_field', 'score'),
                                 )
                 else:
                     matched, det_lines, annotated, objects = result
@@ -511,8 +541,9 @@ def main():
                                     annotated_path = det_img
                                 except Exception as e:
                                     LOGGER.warning(f"Failed to save annotated image: {e}")
-                            # Prepare labels for callbacks/POST
+                            # Prepare labels for callbacks/POST (filtered by --save-on when provided)
                             labels = _extract_labels_from_lines(det_lines)
+                            filtered_labels = _filter_labels_for_save_on(labels, args.save_on)
                             # On-match callback (in-memory path)
                             if args.on_match_cmd:
                                 _run_on_match(
@@ -520,7 +551,7 @@ def main():
                                     image=filename,
                                     txt=txt_path,
                                     annotated=annotated_path,
-                                    labels=labels,
+                                    labels=filtered_labels,
                                     timestamp=ts,
                                     save_dir=save_dir,
                                     sync=getattr(args, 'on_match_sync', False),
@@ -535,7 +566,7 @@ def main():
                                     image=filename,
                                     txt=txt_path,
                                     annotated=annotated_path,
-                                    labels=labels,
+                                    labels=filtered_labels,
                                     timestamp=ts,
                                     save_dir=save_dir,
                                     timeout=getattr(args, 'post_timeout', 15),
@@ -593,12 +624,14 @@ def main():
                             pass
                         det_img_path = filename.with_name(filename.stem + "_det.jpg")
                         annotated_path = det_img_path if det_img_path.exists() else None
+                        # Filter labels to only those in --save-on (if provided)
+                        filtered_labels = _filter_labels_for_save_on(labels, args.save_on)
                         _run_on_match(
                             args.on_match_cmd,
                             image=filename,
                             txt=txt_path,
                             annotated=annotated_path,
-                            labels=list(dict.fromkeys(labels)),
+                            labels=filtered_labels,
                             timestamp=ts,
                             save_dir=save_dir,
                             sync=getattr(args, 'on_match_sync', False),
@@ -619,7 +652,7 @@ def main():
                                 image=filename,
                                 txt=txt_path,
                                 annotated=annotated_path,
-                                labels=list(dict.fromkeys(labels)),
+                                labels=filtered_labels,
                                 timestamp=ts,
                                 save_dir=save_dir,
                                 timeout=getattr(args, 'post_timeout', 15),
